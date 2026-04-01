@@ -342,7 +342,7 @@ if (!empty($page_order_ids)) {
 
     $sql = "
         SELECT
-            o.OrderID, o.TotalAmount, o.TotalAmountAfterVoucher, o.Status, o.PaymentMethod,
+            o.OrderID, o.TotalAmount, o.TotalAmountAfterVoucher, o.Status, o.PaymentMethod, o.PaymentStatus,
             o.ShippingCity, o.ShippingDistrict, o.ShippingWard, o.ShippingStreet, o.ShippingNumber,
             o.CreatedDate, o.DateReceived,
             oi.OrderItemID, oi.Quantity, oi.UnitPrice, oi.DiscountedPrice,
@@ -381,6 +381,7 @@ if (!empty($page_order_ids)) {
                 'TotalAmountAfterVoucher' => $order['TotalAmountAfterVoucher'],
                 'Status' => $order['Status'],
                 'PaymentMethod' => $order['PaymentMethod'],
+                'PaymentStatus' => $order['PaymentStatus'],
                 'ShippingAddress' => implode(', ', $address_parts),
                 'CreatedDate' => $order['CreatedDate'],
                 'DateReceived' => $order['DateReceived'],
@@ -469,7 +470,7 @@ if (!empty($page_order_ids)) {
             <?php echo htmlspecialchars($message); ?>
         </div>
     <?php endif; ?>
-
+    
     <?php if (empty($grouped_orders)): ?>
         <div class="account-empty-state">
             <i class="fas fa-box-open"></i>

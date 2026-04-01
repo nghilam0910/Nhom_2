@@ -167,6 +167,7 @@ CREATE TABLE `Order` (
     TotalAmountAfterVoucher DECIMAL(18,2),
     Status VARCHAR(20),
     PaymentMethod VARCHAR(20),
+    PaymentStatus VARCHAR(20),
     ShippingCity VARCHAR(200),
     ShippingDistrict VARCHAR(200),
     ShippingWard VARCHAR(200),

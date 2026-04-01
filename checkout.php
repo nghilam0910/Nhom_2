@@ -336,7 +336,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
     $email     = trim($_POST['email'] ?? '');
     $phone     = trim($_POST['phone'] ?? '');
     $note      = trim($_POST['note'] ?? '');
-    $payment   = trim($_POST['payment_method'] ?? 'cod');
+    $payment = strtoupper(trim($_POST['payment_method'] ?? 'COD'));
+
+if (!in_array($payment, ['COD', 'BANK_ATM', 'BANK_QR', 'BANK_VISA'])) {
+    $payment = 'COD';
+}
 
     $shippingCity     = trim($_POST['shipping_city'] ?? '');
     $shippingDistrict = trim($_POST['shipping_district'] ?? '');
@@ -408,36 +412,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
             // 2) insert Order
             $orderId = gen_id6();
 
-            $insOrder = $pdo->prepare("
-                INSERT INTO `Order` (
-                    OrderID, UserID,
-                    TotalAmount, TotalAmountAfterVoucher,
-                    Status, PaymentMethod,
-                    ShippingCity, ShippingDistrict, ShippingWard, ShippingStreet, ShippingNumber,
-                    CreatedDate, DateReceived, Note
-                ) VALUES (
-                    :oid, :uid,
-                    :total, :afterVoucher,
-                    :status, :pay,
-                    :city, :district, :ward, :street, :num,
-                    NOW(), NULL, :note
-                )
-            ");
+            $orderStatus   = ($payment === 'COD') ? 'Chờ xác nhận' : 'Chờ thanh toán';
+            $paymentStatus = ($payment === 'COD') ? 'Unpaid' : 'Pending';
+
+$insOrder = $pdo->prepare("
+    INSERT INTO `Order` (
+        OrderID, UserID,
+        TotalAmount, TotalAmountAfterVoucher,
+        Status, PaymentMethod, PaymentStatus,
+        ShippingCity, ShippingDistrict, ShippingWard, ShippingStreet, ShippingNumber,
+        CreatedDate, DateReceived, Note
+    ) VALUES (
+        :oid, :uid,
+        :total, :afterVoucher,
+        :status, :pay, :paymentStatus,
+        :city, :district, :ward, :street, :num,
+        NOW(), NULL, :note
+    )
+");
 
             $insOrder->execute([
-                ':oid'          => $orderId,
-                ':uid'          => $userId,
-                ':total'        => (float)$subTotal,     // tiền hàng
-                ':afterVoucher' => (float)$grandTotal,   // tiền cuối = sau voucher + ship
-                ':status'       => 'Chờ xác nhận',
-                ':pay'          => $payment,
-                ':city'         => $shippingCity,
-                ':district'     => $shippingDistrict,
-                ':ward'         => $shippingWard,
-                ':street'       => $shippingStreet,
-                ':num'          => $shippingNumber,
-                ':note'         => $note,
-            ]);
+    ':oid'           => $orderId,
+    ':uid'           => $userId,
+    ':total'         => (float)$subTotal,
+    ':afterVoucher'  => (float)$grandTotal,
+    ':status'        => $orderStatus,
+    ':pay'           => $payment,
+    ':paymentStatus' => $paymentStatus,
+    ':city'          => $shippingCity,
+    ':district'      => $shippingDistrict,
+    ':ward'          => $shippingWard,
+    ':street'        => $shippingStreet,
+    ':num'           => $shippingNumber,
+    ':note'          => $note,
+]);
 
             // 3) insert Order_Items
             $insItem = $pdo->prepare("
@@ -456,35 +464,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                 ]);
             }
 
-            // 4) TRỪ TỒN KHO SKU + CỘNG SOLDQUANTITY PRODUCT
-            $decStock = $pdo->prepare("
-                UPDATE SKU
-                SET Stock = Stock - :qty_dec
-                WHERE SKUID = :skuid
-                AND Status = 1
-                AND Stock >= :qty_chk
-            ");
+            if ($payment === 'COD') {
+    // trừ kho
+    $decStock = $pdo->prepare("
+        UPDATE SKU
+        SET Stock = Stock - :qty_dec
+        WHERE SKUID = :skuid
+          AND Status = 1
+          AND Stock >= :qty_chk
+    ");
 
+    $incSold = $pdo->prepare("
+        UPDATE Product p
+        JOIN SKU s ON s.ProductID = p.ProductID
+        SET p.SoldQuantity = COALESCE(p.SoldQuantity, 0) + :qty
+        WHERE s.SKUID = :skuid
+    ");
 
-            $incSold = $pdo->prepare("
-                UPDATE Product p
-                JOIN SKU s ON s.ProductID = p.ProductID
-                SET p.SoldQuantity = COALESCE(p.SoldQuantity, 0) + :qty
-                WHERE s.SKUID = :skuid
-            ");
+                foreach ($products as $p) {
+                    $qty = (int) $p['Quantity'];
+                    $sk = $p['SKUID'];
 
-            foreach ($products as $p) {
-                $qty = (int)$p['Quantity'];
-                $sk  = $p['SKUID'];
+                    $decStock->execute([
+                        ':qty_dec' => $qty,
+                        ':qty_chk' => $qty,
+                        ':skuid' => $sk
+                    ]);
 
-                $decStock->execute([
-                    ':qty_dec' => $qty,
-                    ':qty_chk' => $qty,
-                    ':skuid'   => $sk
-                ]);
+                    $incSold->execute([
+                        ':qty' => $qty,
+                        ':skuid' => $sk
+                    ]);
+                }
 
-
-                $incSold->execute([':qty' => $qty, ':skuid' => $sk]);
+                
             }
 
             // 5) insert Shipping_Order
@@ -536,16 +549,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                 ")->execute([':vid' => $voucher['VoucherID']]);
             }
 
-            // 7) clear cart items
-            $pdo->prepare("
-                DELETE ci FROM Cart_Items ci
-                JOIN Cart c ON ci.CartID = c.CartID
-                WHERE c.UserID = :uid
-            ")->execute([':uid' => $userId]);
+            //7. clear cart
+                $pdo->prepare("
+                    DELETE ci FROM Cart_Items ci
+                    JOIN Cart c ON ci.CartID = c.CartID
+                    WHERE c.UserID = :uid
+                ")->execute([':uid' => $userId]);
+            
 
             $pdo->commit();
 
-            $success_msg = "Đặt hàng thành công! Mã đơn: <strong>" . htmlspecialchars($orderId) . "</strong> ✨";
+
+if (in_array($payment, ['BANK_ATM', 'BANK_QR', 'BANK_VISA'])) {
+
+    if ($payment === 'BANK_QR') {
+        $requestType = 'captureWallet';
+    } elseif ($payment === 'BANK_ATM') {
+        $requestType = 'payWithATM';
+    } else { // BANK_VISA
+        $requestType = 'payWithCC';
+    }
+    ?>
+    <form id="momoRedirectForm" action="fh_amt_momo.php" method="post">
+        <input type="hidden" name="soTien" value="<?php echo (float)$grandTotal; ?>">
+        <input type="hidden" name="orderId" value="<?php echo htmlspecialchars($orderId); ?>">
+        <input type="hidden" name="orderInfo" value="<?php echo htmlspecialchars('Thanh toán đơn hàng ' . $orderId); ?>">
+        <input type="hidden" name="requestType" value="<?php echo htmlspecialchars($requestType); ?>">
+        <input type="hidden" name="email" value="<?php echo htmlspecialchars($email); ?>">
+    </form>
+    <script>
+        document.getElementById('momoRedirectForm').submit();
+    </script>
+    <?php
+    exit;
+}
+
+$success_msg = "Đặt hàng thành công! Mã đơn: <strong>" . htmlspecialchars($orderId) . "</strong> ✨";
 
             // reset view
             $products = [];
@@ -566,11 +605,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
 }
 
 
-$prefill_city     = $_POST['shipping_city'] ?? ($userProfile['ShippingCity'] ?? '');
-$prefill_district = $_POST['shipping_district'] ?? ($userProfile['ShippingDistrict'] ?? '');
-$prefill_ward     = $_POST['shipping_ward'] ?? ($userProfile['ShippingWard'] ?? '');
-$prefill_street   = $_POST['shipping_street'] ?? ($userProfile['ShippingStreet'] ?? '');
-$prefill_number   = $_POST['shipping_number'] ?? ($userProfile['ShippingNumber'] ?? '');
+$prefill_city     = $_POST['shipping_city'] ?? ($userProfile['City'] ?? '');
+$prefill_district = $_POST['shipping_district'] ?? ($userProfile['District'] ?? '');
+$prefill_ward     = $_POST['shipping_ward'] ?? ($userProfile['Ward'] ?? '');
+$prefill_street   = $_POST['shipping_street'] ?? ($userProfile['Street'] ?? '');
+$prefill_number   = $_POST['shipping_number'] ?? ($userProfile['HouseNumber'] ?? '');
 
 $prefill_phone = $_POST['phone'] ?? ($userProfile['Phone'] ?? '');
 $prefill_email = $_POST['email'] ?? ($userProfile['Email'] ?? '');
@@ -800,57 +839,30 @@ $prefill_name  = $_POST['full_name'] ?? ($userProfile['FullName'] ?? $currentUse
 
 
                                 <!-- PAYMENT -->
-                                <div class="checkout-field checkout-field-full">
-                                    <span class="account-label">Phương thức thanh toán</span>
-                                    <div class="checkout-payment-options">
-                                        <label class="checkout-radio-option">
-                                            <input type="radio" name="payment_method" value="cod"
-                                                <?php echo (($_POST['payment_method'] ?? 'cod') === 'cod') ? 'checked' : ''; ?>>
-                                            <span>Thanh toán khi nhận hàng (COD)</span>
-                                        </label>
-                                        <label class="checkout-radio-option">
-                                            <input type="radio" name="payment_method" value="bank"
-                                                <?php echo (($_POST['payment_method'] ?? '') === 'bank') ? 'checked' : ''; ?>>
-                                            <span>Chuyển khoản ngân hàng</span>
-                                        </label>
-                                    </div>
+                                <div class="checkout-payment-options">
+                                    <label class="checkout-radio-option">
+                                        <input type="radio" name="payment_method" value="COD"
+                                            <?php echo (($_POST['payment_method'] ?? 'COD') === 'COD') ? 'checked' : ''; ?>>
+                                        <span>Thanh toán khi nhận hàng (COD)</span>
+                                    </label>
 
-                                    <!-- BANK TRANSFER INFO -->
-                                    <div id="bankTransferBox" class="mt-3" style="display:none;">
-                                    <div class="p-3 rounded" style="border:1px solid #e6e6e6; background:#fff;">
-                                        <div class="d-flex flex-wrap gap-3 align-items-start">
-                                        
-                                        <div style="min-width: 180px;">
-                                            <img
-                                            src="img/QR Code.png"
-                                            alt="QR chuyển khoản"
-                                            style="width:180px; height:180px; object-fit:contain; border:1px solid #f0f0f0; border-radius:12px; padding:8px; background:#fff;"
-                                            >
-                                            <div class="small text-secondary mt-2">Quét QR để chuyển khoản</div>
-                                        </div>
+                                    <label class="checkout-radio-option">
+                                        <input type="radio" name="payment_method" value="BANK_ATM"
+                                            <?php echo (($_POST['payment_method'] ?? '') === 'BANK_ATM') ? 'checked' : ''; ?>>
+                                        <span>Thanh toán ATM nội địa</span>
+                                    </label>
 
-                                        <div style="flex:1; min-width: 260px;">
-                                            <h6 class="mb-2">Hướng dẫn thanh toán chuyển khoản</h6>
+                                    <label class="checkout-radio-option">
+                                        <input type="radio" name="payment_method" value="BANK_VISA"
+                                            <?php echo (($_POST['payment_method'] ?? '') === 'BANK_VISA') ? 'checked' : ''; ?>>
+                                        <span>Thanh toán thẻ Visa/Mastercard/JCB</span>
+                                    </label>
 
-                                            <div class="small mb-1"><strong>Ngân hàng:</strong> Vietcombank</div>
-                                            <div class="small mb-1"><strong>Số tài khoản:</strong> 0123 456 789</div>
-                                            <div class="small mb-1"><strong>Chủ tài khoản:</strong> MOONLIT STORE</div>
-                                            <div class="small mb-2"><strong>Số tiền:</strong> <span id="bankAmountText"><?php echo number_format((float)$grandTotal, 0, ',', '.'); ?> đ</span></div>
-
-                                            <div class="small">
-                                            <strong>Nội dung chuyển khoản:</strong>
-                                            <span id="bankContentText">MOONLIT <?php echo htmlspecialchars($userId); ?></span>
-                                            </div>
-
-                                            <div class="small text-secondary mt-2">
-                                            Sau khi chuyển khoản, Moonlit sẽ xác nhận và xử lý đơn hàng sớm nhất 💙
-                                            </div>
-                                        </div>
-
-                                        </div>
-                                    </div>
-                                    </div>
-
+                                    <label class="checkout-radio-option">
+                                        <input type="radio" name="payment_method" value="BANK_QR"
+                                            <?php echo (($_POST['payment_method'] ?? '') === 'BANK_QR') ? 'checked' : ''; ?>>
+                                        <span>Quét mã QR</span>
+                                    </label>
                                 </div>
 
                             </div>
@@ -961,12 +973,14 @@ $prefill_name  = $_POST['full_name'] ?? ($userProfile['FullName'] ?? $currentUse
 
 <script>
   function toggleBankBox() {
-    const bankRadio = document.querySelector('input[name="payment_method"][value="bank"]');
-    const bankBox = document.getElementById('bankTransferBox');
-    if (!bankRadio || !bankBox) return;
+  const cardRadio = document.querySelector('input[name="payment_method"][value="BANK_CARD"]');
+  const qrRadio   = document.querySelector('input[name="payment_method"][value="BANK_QR"]');
+  const bankBox   = document.getElementById('bankTransferBox');
+  if (!bankBox) return;
 
-    bankBox.style.display = bankRadio.checked ? 'block' : 'none';
-  }
+  const isOnline = (cardRadio && cardRadio.checked) || (qrRadio && qrRadio.checked);
+  bankBox.style.display = isOnline ? 'block' : 'none';
+}
 
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('input[name="payment_method"]').forEach(r => {

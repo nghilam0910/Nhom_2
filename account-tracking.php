@@ -11,6 +11,31 @@ if (!isset($_SESSION['user_id'])) {
 
 $user_id = $_SESSION['user_id'];
 
+if (isset($_GET['payment'])) {
+    $paymentType = $_GET['payment'] ?? '';
+    $paymentMsg  = $_GET['msg'] ?? '';
+    $paymentOrderId = $_GET['orderId'] ?? '';
+
+    $alertClass = 'info';
+    if ($paymentType === 'success') $alertClass = 'success';
+    elseif ($paymentType === 'cancel') $alertClass = 'warning';
+    elseif ($paymentType === 'error') $alertClass = 'danger';
+
+    if ($paymentMsg === '') {
+        if ($paymentType === 'success') $paymentMsg = 'Thanh toán thành công.';
+        elseif ($paymentType === 'cancel') $paymentMsg = 'Bạn đã hủy giao dịch hoặc thanh toán thất bại.';
+        elseif ($paymentType === 'error') $paymentMsg = 'Có lỗi xảy ra khi xử lý thanh toán.';
+    }
+
+    $payment_alert_html = '<div class="alert alert-' . htmlspecialchars($alertClass) . ' account-alert" role="alert">'
+        . htmlspecialchars($paymentMsg);
+
+    if ($paymentOrderId !== '') {
+        $payment_alert_html .= '<br>Mã đơn: <strong>' . htmlspecialchars($paymentOrderId) . '</strong>';
+    }
+
+    $payment_alert_html .= '</div>';
+}
 // --- PHẦN 1: XỬ LÝ FORM (GIỮ NGUYÊN) ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'confirm_received') {
     $order_id_confirm = $_POST['order_id'] ?? 0;
@@ -100,6 +125,7 @@ $stmt = $pdo->prepare("
         o.TotalAmountAfterVoucher,
         o.Status,
         o.PaymentMethod,
+        o.PaymentStatus,
         o.ShippingCity,
         o.ShippingDistrict,
         o.ShippingWard,
@@ -157,6 +183,7 @@ foreach ($orders as $order) {
             'TotalAmountAfterVoucher' => $order['TotalAmountAfterVoucher'],
             'Status' => $order['Status'],
             'PaymentMethod' => $order['PaymentMethod'],
+            'PaymentStatus' => $order['PaymentStatus'],
             'ShippingAddress' => $full_shipping_address,
             'CreatedDate' => $order['CreatedDate'],
             'CarrierName' => $order['CarrierName'], /* <--- LƯU TÊN NHÀ VẬN CHUYỂN */
@@ -194,7 +221,7 @@ $status_config = [
 
 <div class="account-section" data-page-id="tracking-page">
     <h2 class="account-section-title">Theo dõi đơn hàng</h2>
-
+    <?php if (!empty($payment_alert_html)) echo $payment_alert_html; ?>
     <?php if (empty($grouped_orders)): ?>
         <div class="account-empty-state">
             <i class="fas fa-check-circle"></i>
@@ -316,9 +343,29 @@ $status_config = [
 
                     <div class="account-tracking-details">
                         <div class="account-tracking-detail-item">
-                            <span class="account-tracking-detail-label">Thanh toán:</span>
-                            <span class="account-tracking-detail-value"><?php echo htmlspecialchars($order['PaymentMethod'] ?? 'N/A'); ?></span>
-                        </div>
+    <span class="account-tracking-detail-label">Thanh toán:</span>
+    <span class="account-tracking-detail-value">
+        <?php
+        $payMethod = strtoupper(trim($order['PaymentMethod'] ?? ''));
+if ($payMethod === 'COD') {
+    echo 'COD';
+} elseif ($payMethod === 'BANK_QR') {
+    echo 'MoMo QR';
+} elseif ($payMethod === 'BANK_ATM') {
+    echo 'ATM nội địa';
+} else {
+    echo htmlspecialchars($order['PaymentMethod'] ?? 'N/A');
+}
+?>
+    </span>
+</div>
+
+<div class="account-tracking-detail-item">
+    <span class="account-tracking-detail-label">Trạng thái thanh toán:</span>
+    <span class="account-tracking-detail-value">
+        <?php echo htmlspecialchars($order['PaymentStatus'] ?? 'N/A'); ?>
+    </span>
+</div>
                         <div class="account-tracking-detail-item">
                             <span class="account-tracking-detail-label">Địa chỉ:</span>
                             <span class="account-tracking-detail-value"><?php echo htmlspecialchars($order['ShippingAddress'] ?? 'N/A'); ?></span>
@@ -401,22 +448,50 @@ $status_config = [
                             ?>
                         </div>
 
-                        <?php if ($current_status === 'Đã giao'): ?>
-                            <form method="POST" onsubmit="return confirm('Bạn xác nhận đã nhận được đầy đủ hàng?');">
-                                <input type="hidden" name="action" value="confirm_received">
-                                <input type="hidden" name="order_id" value="<?php echo $order['OrderID']; ?>">
-                                
-                                <button type="submit" class="btn-tracking-action btn-green">
-                                    <i class="fas fa-check-circle"></i> Đã nhận hàng
-                                </button>
-                            </form>
+                        <?php
+$payMethod = strtoupper(trim($order['PaymentMethod'] ?? ''));
+$payStatus = strtoupper(trim($order['PaymentStatus'] ?? ''));
+?>
 
-                        <?php elseif ($current_status === 'Chờ xác nhận'): ?>
-                            <button type="button" class="btn-tracking-action btn-red" onclick="openCancelModal('<?php echo $order['OrderID']; ?>')">
-                                <i class="fas fa-times-circle"></i> Hủy đơn hàng
-                            </button>
+<?php if ($current_status === 'Đã giao'): ?>
+    <form method="POST" onsubmit="return confirm('Bạn xác nhận đã nhận được đầy đủ hàng?');">
+        <input type="hidden" name="action" value="confirm_received">
+        <input type="hidden" name="order_id" value="<?php echo $order['OrderID']; ?>">
+        
+        <button type="submit" class="btn-tracking-action btn-green">
+            <i class="fas fa-check-circle"></i> Đã nhận hàng
+        </button>
+    </form>
 
-                        <?php endif; ?>
+<?php elseif ($current_status === 'Chờ thanh toán'): ?>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <?php if (in_array($payMethod, ['BANK_QR', 'BANK_ATM']) && $payStatus === 'PENDING'): ?>
+            <?php
+                $requestType = ($payMethod === 'BANK_QR') ? 'captureWallet' : 'payWithATM';
+
+                $amountToPay = 0;
+                if (!empty($order['TotalAmountAfterVoucher']) && $order['TotalAmountAfterVoucher'] > 0) {
+                    $amountToPay = $order['TotalAmountAfterVoucher'];
+                } else {
+                    $amountToPay = ($order['TotalAmount'] ?? 0) + ($order['ShippingPrice'] ?? 0);
+                }
+            ?>
+            <form action="fh_amt_momo.php" method="post" style="display:inline-block;">
+                <input type="hidden" name="soTien" value="<?php echo (float)$amountToPay; ?>">
+                <input type="hidden" name="orderId" value="<?php echo htmlspecialchars($order['OrderID']); ?>">
+                <input type="hidden" name="orderInfo" value="<?php echo htmlspecialchars('Thanh toán đơn hàng ' . $order['OrderID']); ?>">
+                <input type="hidden" name="requestType" value="<?php echo htmlspecialchars($requestType); ?>">
+                <button type="submit" class="btn-tracking-action btn-green">
+                    <i class="fas fa-credit-card"></i> Thanh toán ngay
+                </button>
+            </form>
+        <?php endif; ?>
+
+        <button type="button" class="btn-tracking-action btn-red" onclick="openCancelModal('<?php echo $order['OrderID']; ?>')">
+            <i class="fas fa-times-circle"></i> Hủy đơn hàng
+        </button>
+    </div>
+<?php endif; ?>
                     </div>
                 </div>
             <?php endforeach; ?>
